@@ -11,8 +11,8 @@ android {
         applicationId = "com.fixmylife.selfiescreen"
         minSdk = 29
         targetSdk = 34
-        versionCode = 1
-        versionName = "1.0"
+        versionCode = 2
+        versionName = "1.1"
     }
     buildTypes {
         release { isMinifyEnabled = false }
@@ -31,5 +31,6 @@ dependencies {
     implementation("androidx.camera:camera-core:$camerax")
     implementation("androidx.camera:camera-camera2:$camerax")
     implementation("androidx.camera:camera-lifecycle:$camerax")
+    implementation("androidx.camera:camera-video:$camerax")
     implementation("androidx.camera:camera-view:$camerax")
 }
