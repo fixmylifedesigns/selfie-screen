@@ -78,6 +78,7 @@ class MainActivity : ComponentActivity(), BleLink.Listener {
     private lateinit var connectBtn: TextView
     private lateinit var mirrorBtn: TextView
     private lateinit var micBtn: TextView
+    private lateinit var flashBtn: TextView
     private lateinit var recTimer: TextView
     private lateinit var shutter: View
     private lateinit var shutterInner: View
@@ -95,6 +96,8 @@ class MainActivity : ComponentActivity(), BleLink.Listener {
     private var recording: Recording? = null
     private var mode = Mode.PHOTO
     private var lensFacing = CameraSelector.LENS_FACING_BACK
+    private var flashMode = ImageCapture.FLASH_MODE_OFF
+    private var torchOn = false
     private val analysisExecutor = Executors.newSingleThreadExecutor()
     private val encodeExecutor = Executors.newSingleThreadExecutor()
     @Volatile private var latestFrame: Bitmap? = null
@@ -203,7 +206,7 @@ class MainActivity : ComponentActivity(), BleLink.Listener {
         }
         root.addView(previewView, FrameLayout.LayoutParams(-1, -1))
 
-        // ---- top bar: status + mirror + mic + connect
+        // ---- top bar: status + flash + mirror + mic + connect
         val top = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
@@ -215,6 +218,7 @@ class MainActivity : ComponentActivity(), BleLink.Listener {
             text = "Not connected"
             setShadowLayer(4f, 0f, 0f, Color.BLACK)
         }
+        flashBtn = pill("\u26A1 Off") { cycleFlash() }
         mirrorBtn = pill("Mirror") {
             mirrorOut = !mirrorOut
             mirrorBtn.setTextColor(if (mirrorOut) Color.rgb(255, 214, 0) else Color.WHITE)
@@ -222,7 +226,8 @@ class MainActivity : ComponentActivity(), BleLink.Listener {
         micBtn = pill("Mic") { showMicPicker() }
         connectBtn = pill("Connect") { onConnectClicked() }
         top.addView(statusText, LinearLayout.LayoutParams(0, -2, 1f))
-        top.addView(mirrorBtn)
+        top.addView(flashBtn)
+        top.addView(mirrorBtn, LinearLayout.LayoutParams(-2, -2).apply { leftMargin = dp(6) })
         top.addView(micBtn, LinearLayout.LayoutParams(-2, -2).apply { leftMargin = dp(6) })
         top.addView(connectBtn, LinearLayout.LayoutParams(-2, -2).apply { leftMargin = dp(6) })
         root.addView(top, FrameLayout.LayoutParams(-1, -2, Gravity.TOP))
@@ -320,6 +325,42 @@ class MainActivity : ComponentActivity(), BleLink.Listener {
 
     private fun setStatus(text: String) = runOnUiThread { statusText.text = text }
 
+    // --------------------------------------------------------------- Flash
+
+    /** Photo mode cycles Off -> Auto -> On; video mode toggles the torch. */
+    private fun cycleFlash() {
+        if (mode == Mode.VIDEO) {
+            torchOn = !torchOn
+            camera?.cameraControl?.enableTorch(torchOn)
+        } else {
+            flashMode = when (flashMode) {
+                ImageCapture.FLASH_MODE_OFF -> ImageCapture.FLASH_MODE_AUTO
+                ImageCapture.FLASH_MODE_AUTO -> ImageCapture.FLASH_MODE_ON
+                else -> ImageCapture.FLASH_MODE_OFF
+            }
+            imageCapture?.flashMode = flashMode
+        }
+        updateFlashUi()
+    }
+
+    private fun updateFlashUi() {
+        val hasFlash = camera?.cameraInfo?.hasFlashUnit() ?: true
+        flashBtn.visibility = if (hasFlash) View.VISIBLE else View.GONE
+        val on: Boolean
+        if (mode == Mode.VIDEO) {
+            flashBtn.text = if (torchOn) "\u26A1 Torch" else "\u26A1 Off"
+            on = torchOn
+        } else {
+            flashBtn.text = when (flashMode) {
+                ImageCapture.FLASH_MODE_ON -> "\u26A1 On"
+                ImageCapture.FLASH_MODE_AUTO -> "\u26A1 Auto"
+                else -> "\u26A1 Off"
+            }
+            on = flashMode != ImageCapture.FLASH_MODE_OFF
+        }
+        flashBtn.setTextColor(if (on) Color.rgb(255, 214, 0) else Color.WHITE)
+    }
+
     private fun fmtZoom(r: Float): String =
         if (r < 1f) String.format(Locale.US, "%.1f", r).removePrefix("0")
         else if (abs(r - Math.round(r)) > 0.05f) String.format(Locale.US, "%.1f", r)
@@ -391,6 +432,7 @@ class MainActivity : ComponentActivity(), BleLink.Listener {
         videoTab.setTextColor(if (mode == Mode.VIDEO) Color.WHITE else 0x99FFFFFF.toInt())
         micBtn.visibility = if (mode == Mode.VIDEO) View.VISIBLE else View.GONE
         shutterInner.visibility = if (mode == Mode.VIDEO) View.VISIBLE else View.GONE
+        updateFlashUi()
     }
 
     // -------------------------------------------------------------- Camera
@@ -447,6 +489,7 @@ class MainActivity : ComponentActivity(), BleLink.Listener {
         val third: UseCase = if (mode == Mode.PHOTO) {
             ImageCapture.Builder()
                 .setCaptureMode(ImageCapture.CAPTURE_MODE_MINIMIZE_LATENCY)
+                .setFlashMode(flashMode)
                 .build().also { imageCapture = it; videoCapture = null }
         } else {
             val recorder = Recorder.Builder()
@@ -462,6 +505,8 @@ class MainActivity : ComponentActivity(), BleLink.Listener {
             val cam = provider.bindToLifecycle(this, selector, preview, analysis, third)
             camera = cam
             cam.cameraInfo.zoomState.observe(this) { updateZoomUi(it) }
+            if (mode == Mode.VIDEO && torchOn) cam.cameraControl.enableTorch(true) else torchOn = false
+            updateFlashUi()
         } catch (e: Exception) {
             Log.e(tag, "bind failed", e)
             setStatus("Camera error: ${e.message}")
