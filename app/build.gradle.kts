@@ -3,6 +3,10 @@ plugins {
     id("org.jetbrains.kotlin.android")
 }
 
+// Build number comes from CI so each release is a higher versionCode than the last.
+val buildNumber = (System.getenv("GITHUB_RUN_NUMBER") ?: "1").toInt()
+val keystoreFile = rootProject.file("app/keystore.jks")
+
 android {
     namespace = "com.fixmylife.selfiescreen"
     compileSdk = 34
@@ -11,11 +15,29 @@ android {
         applicationId = "com.fixmylife.selfiescreen"
         minSdk = 29
         targetSdk = 34
-        versionCode = 2
-        versionName = "1.1"
+        versionCode = buildNumber
+        versionName = "1.2.$buildNumber"
     }
+
+    signingConfigs {
+        create("shared") {
+            if (keystoreFile.exists()) {
+                storeFile = keystoreFile
+                storePassword = "selfiescreen"
+                keyAlias = "selfie"
+                keyPassword = "selfiescreen"
+            }
+        }
+    }
+
     buildTypes {
-        release { isMinifyEnabled = false }
+        debug {
+            if (keystoreFile.exists()) signingConfig = signingConfigs.getByName("shared")
+        }
+        release {
+            isMinifyEnabled = false
+            if (keystoreFile.exists()) signingConfig = signingConfigs.getByName("shared")
+        }
     }
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_17

@@ -18,12 +18,14 @@ jobs:
       - uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: "8.7"
+      - name: Restore signing key
+        run: base64 -d ci/keystore.b64 > app/keystore.jks
       - run: gradle assembleDebug --no-daemon
       - run: cp app/build/outputs/apk/debug/app-debug.apk SelfieScreen.apk
       - uses: actions/upload-artifact@v4
         with:
           name: SelfieScreen-apk
-          path: app/build/outputs/apk/debug/*.apk
+          path: SelfieScreen.apk
       - uses: softprops/action-gh-release@v2
         with:
           tag_name: build-${{ github.run_number }}
