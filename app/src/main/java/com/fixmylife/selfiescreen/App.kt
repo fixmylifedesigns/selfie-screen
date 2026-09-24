@@ -4,7 +4,7 @@ import android.app.Activity
 import android.app.Application
 import android.os.Bundle
 
-/** Checks GitHub for a newer release once per app launch, without touching MainActivity. */
+/** Checks GitHub for a newer release on launch, and finishes pending updates on resume. */
 class App : Application() {
 
     private var checked = false
@@ -13,9 +13,14 @@ class App : Application() {
         super.onCreate()
         registerActivityLifecycleCallbacks(object : Application.ActivityLifecycleCallbacks {
             override fun onActivityResumed(activity: Activity) {
-                if (checked) return
-                checked = true
-                Updater(activity).check(silent = true)
+                val updater = Updater(activity)
+                if (!checked) {
+                    checked = true
+                    updater.check(silent = true)
+                } else {
+                    // Back from the install-permission screen? Carry on with the download.
+                    updater.resumePending()
+                }
             }
 
             override fun onActivityCreated(activity: Activity, savedInstanceState: Bundle?) {}
