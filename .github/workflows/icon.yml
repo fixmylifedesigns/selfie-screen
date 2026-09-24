@@ -1,0 +1,45 @@
+name: Generate launcher icons
+on:
+  push:
+    paths:
+      - ci/icon-source.txt
+      - .github/workflows/icon.yml
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  icons:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download source art
+        run: |
+          URL=$(head -n1 ci/icon-source.txt | tr -d '\r\n')
+          curl -fsSL "$URL" -o source.png
+          file source.png
+
+      - name: Render mipmaps
+        run: |
+          set -e
+          declare -A SIZES=( [mdpi]=48 [hdpi]=72 [xhdpi]=96 [xxhdpi]=144 [xxxhdpi]=192 )
+          for d in "${!SIZES[@]}"; do
+            S=${SIZES[$d]}
+            OUT=app/src/main/res/mipmap-$d
+            mkdir -p "$OUT"
+            convert source.png -resize ${S}x${S}^ -gravity center -extent ${S}x${S} "$OUT/ic_launcher.png"
+            convert -size ${S}x${S} xc:none -fill white -draw "circle $((S/2)),$((S/2)) $((S/2)),0" mask.png
+            convert "$OUT/ic_launcher.png" mask.png -alpha Off -compose CopyOpacity -composite "$OUT/ic_launcher_round.png"
+          done
+          ls -R app/src/main/res | head -40
+
+      - name: Commit icons
+        run: |
+          git config user.name "github-actions"
+          git config user.email "github-actions@users.noreply.github.com"
+          git add app/src/main/res
+          git diff --cached --quiet && echo "no icon changes" && exit 0
+          git commit -m "Generate launcher icons from source art"
+          git push
