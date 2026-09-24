@@ -11,10 +11,12 @@ import android.bluetooth.le.ScanSettings
 import android.content.ContentValues
 import android.content.pm.PackageManager
 import android.graphics.Bitmap
+import android.graphics.BitmapFactory
 import android.graphics.Canvas
 import android.graphics.Color
 import android.graphics.Matrix
 import android.graphics.Paint
+import android.graphics.ImageDecoder
 import android.graphics.drawable.GradientDrawable
 import android.media.AudioDeviceInfo
 import android.media.AudioManager
@@ -35,6 +37,7 @@ import android.widget.LinearLayout
 import android.widget.TextView
 import android.widget.Toast
 import androidx.activity.ComponentActivity
+import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.camera.core.Camera
 import androidx.camera.core.CameraSelector
@@ -58,6 +61,7 @@ import androidx.camera.video.VideoRecordEvent
 import androidx.camera.view.PreviewView
 import androidx.core.content.ContextCompat
 import java.io.ByteArrayOutputStream
+import java.io.File
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
 import java.util.Locale
@@ -78,6 +82,7 @@ class MainActivity : ComponentActivity(), BleLink.Listener {
     private lateinit var connectBtn: TextView
     private lateinit var mirrorBtn: TextView
     private lateinit var micBtn: TextView
+    private lateinit var splashBtn: TextView
     private lateinit var flashBtn: TextView
     private lateinit var recTimer: TextView
     private lateinit var shutter: View
@@ -118,6 +123,15 @@ class MainActivity : ComponentActivity(), BleLink.Listener {
     @Volatile private var mirrorOut = false
     private var framesSent = 0
 
+    // Splash image + on-screen menu (both rendered by the phone into the frames it sends)
+    private val splashFile by lazy { File(filesDir, "splash.png") }
+    private val splashOnConnectMs = 3000L
+    @Volatile private var splash: Bitmap? = null
+    @Volatile private var splashUntil = 0L
+    private lateinit var menu: ScreenMenu
+    private var pendingFlip: Runnable? = null
+    private val doubleFlipMs = 350L
+
     private val presets = floatArrayOf(1f, 2f, 3f, 5f, 10f)
     private val main = Handler(Looper.getMainLooper())
     private var recStartedAt = 0L
@@ -138,10 +152,16 @@ class MainActivity : ComponentActivity(), BleLink.Listener {
         else setStatus("Camera permission is required")
     }
 
+    private val splashPicker = registerForActivityResult(
+        ActivityResultContracts.PickVisualMedia()
+    ) { uri -> if (uri != null) setSplash(uri) }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
         ble = BleLink(applicationContext, this)
+        menu = buildMenu()
+        if (splashFile.exists()) splash = BitmapFactory.decodeFile(splashFile.path)
         buildUi()
         permLauncher.launch(requiredPermissions())
     }
@@ -219,16 +239,15 @@ class MainActivity : ComponentActivity(), BleLink.Listener {
             setShadowLayer(4f, 0f, 0f, Color.BLACK)
         }
         flashBtn = pill("\u26A1 Off") { cycleFlash() }
-        mirrorBtn = pill("Mirror") {
-            mirrorOut = !mirrorOut
-            mirrorBtn.setTextColor(if (mirrorOut) Color.rgb(255, 214, 0) else Color.WHITE)
-        }
+        mirrorBtn = pill("Mirror") { toggleMirror() }
         micBtn = pill("Mic") { showMicPicker() }
+        splashBtn = pill("Splash") { showSplashOptions() }
         connectBtn = pill("Connect") { onConnectClicked() }
         top.addView(statusText, LinearLayout.LayoutParams(0, -2, 1f))
         top.addView(flashBtn)
         top.addView(mirrorBtn, LinearLayout.LayoutParams(-2, -2).apply { leftMargin = dp(6) })
         top.addView(micBtn, LinearLayout.LayoutParams(-2, -2).apply { leftMargin = dp(6) })
+        top.addView(splashBtn, LinearLayout.LayoutParams(-2, -2).apply { leftMargin = dp(6) })
         top.addView(connectBtn, LinearLayout.LayoutParams(-2, -2).apply { leftMargin = dp(6) })
         root.addView(top, FrameLayout.LayoutParams(-1, -2, Gravity.TOP))
 
@@ -321,9 +340,136 @@ class MainActivity : ComponentActivity(), BleLink.Listener {
 
         setContentView(root)
         updateModeUi()
+        updateSplashUi()
     }
 
     private fun setStatus(text: String) = runOnUiThread { statusText.text = text }
+
+    private fun toggleMirror() {
+        mirrorOut = !mirrorOut
+        mirrorBtn.setTextColor(if (mirrorOut) Color.rgb(255, 214, 0) else Color.WHITE)
+    }
+
+    // -------------------------------------------------------------- Splash
+
+    private fun showSplashOptions() {
+        val options = mutableListOf<Pair<String, () -> Unit>>(
+            "Choose image…" to {
+                splashPicker.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly))
+            }
+        )
+        if (splash != null) {
+            options += "Show on screen now" to { showSplash(hold = true) }
+            options += "Remove splash" to {
+                splash = null
+                splashUntil = 0L
+                splashFile.delete()
+                updateSplashUi()
+            }
+        }
+        AlertDialog.Builder(this)
+            .setTitle("Splash screen (shown for 3 s when the screen connects)")
+            .setItems(options.map { it.first }.toTypedArray<CharSequence>()) { _, which -> options[which].second() }
+            .setNegativeButton("Cancel", null)
+            .show()
+    }
+
+    /** Decode the picked image (downscaled, software bitmap so we can draw it) and keep a copy in app storage. */
+    private fun setSplash(uri: android.net.Uri) {
+        encodeExecutor.execute {
+            try {
+                val src = ImageDecoder.createSource(contentResolver, uri)
+                val bmp = ImageDecoder.decodeBitmap(src) { decoder, info, _ ->
+                    decoder.allocator = ImageDecoder.ALLOCATOR_SOFTWARE
+                    val longest = max(info.size.width, info.size.height)
+                    if (longest > 640) {
+                        val s = 640f / longest
+                        decoder.setTargetSize((info.size.width * s).toInt(), (info.size.height * s).toInt())
+                    }
+                }
+                splashFile.outputStream().use { bmp.compress(Bitmap.CompressFormat.PNG, 100, it) }
+                splash = bmp
+                runOnUiThread {
+                    updateSplashUi()
+                    Toast.makeText(this, "Splash saved", Toast.LENGTH_SHORT).show()
+                    showSplash(hold = false)
+                }
+            } catch (e: Exception) {
+                Log.w(tag, "splash decode failed", e)
+                runOnUiThread { Toast.makeText(this, "Couldn't open that image", Toast.LENGTH_SHORT).show() }
+            }
+        }
+    }
+
+    /** Show the splash on the screen for a few seconds, or until a screen button is pressed when [hold]. */
+    private fun showSplash(hold: Boolean) {
+        if (splash == null) return
+        menu.close()
+        splashUntil = if (hold) Long.MAX_VALUE else SystemClock.elapsedRealtime() + splashOnConnectMs
+    }
+
+    private fun splashShowing() = splash != null && SystemClock.elapsedRealtime() < splashUntil
+
+    private fun updateSplashUi() {
+        splashBtn.setTextColor(if (splash != null) Color.rgb(255, 214, 0) else Color.WHITE)
+    }
+
+    // ---------------------------------------------------------------- Menu
+
+    private fun buildMenu() = ScreenMenu(listOf(
+        ScreenMenu.Item({ "Back to camera" }) { false },
+        ScreenMenu.Item({ if (mode == Mode.PHOTO) "Mode: Photo" else "Mode: Video" }) {
+            setMode(if (mode == Mode.PHOTO) Mode.VIDEO else Mode.PHOTO); true
+        },
+        ScreenMenu.Item({ if (lensFacing == CameraSelector.LENS_FACING_BACK) "Camera: Back" else "Camera: Front" }) {
+            flipCamera(); true
+        },
+        ScreenMenu.Item({ "Flash: " + flashBtn.text.removePrefix("⚡ ") }) { cycleFlash(); true },
+        ScreenMenu.Item({ if (mirrorOut) "Mirror: On" else "Mirror: Off" }) { toggleMirror(); true },
+        ScreenMenu.Item({ if (splash != null) "Show splash" else "Splash: none set" }) {
+            showSplash(hold = true); splash == null
+        },
+    ))
+
+    /** FLIP from the screen: single press flips the camera, double press opens the menu. */
+    private fun onScreenFlip() {
+        if (menu.isOpen) {
+            menu.move(+1)
+            return
+        }
+        val waiting = pendingFlip
+        if (waiting != null) {
+            main.removeCallbacks(waiting)
+            pendingFlip = null
+            menu.open()
+            return
+        }
+        val r = Runnable { pendingFlip = null; flipCamera() }
+        pendingFlip = r
+        main.postDelayed(r, doubleFlipMs)
+    }
+
+    /** Routes a screen button press: dismisses a held splash, drives the menu, or does the normal camera action. */
+    private fun onScreenButton(code: Int) {
+        if (splashUntil == Long.MAX_VALUE) {
+            splashUntil = 0L
+            return
+        }
+        if (menu.isOpen && code != 0x06) {
+            when (code) {
+                0x02 -> menu.select()
+                0x0B -> menu.move(+1)
+                0x0A -> menu.move(-1)
+            }
+            return
+        }
+        when (code) {
+            0x02 -> onShutter()
+            0x06 -> onScreenFlip()
+            0x0A -> stepZoom(-1)
+            0x0B -> stepZoom(+1)
+        }
+    }
 
     // --------------------------------------------------------------- Flash
 
@@ -734,6 +880,8 @@ class MainActivity : ComponentActivity(), BleLink.Listener {
     override fun onDisconnected() {
         devW = 0
         latestFrame = null
+        menu.close()
+        splashUntil = 0L
         setStatus("Disconnected")
         runOnUiThread { connectBtn.text = "Connect"; connectBtn.isEnabled = true }
     }
@@ -749,19 +897,20 @@ class MainActivity : ComponentActivity(), BleLink.Listener {
                 if (ble.mtu < 300) devBuf = minOf(devBuf, 5120)
                 setStatus("Streaming to ${devW}x$devH")
                 ble.sendCommand(0x01, 1)
+                runOnUiThread { showSplash(hold = false) }
             }
             0x03 -> sendFrame()
             0x00 -> {
                 ble.sendCommand(0x00, 1)
                 setStatus("Screen closed camera")
             }
-            0x02 -> runOnUiThread { onShutter() }
+            0x02, 0x06, 0x0A, 0x0B -> {
+                val code = cmd[0].toInt() and 0xFF
+                runOnUiThread { onScreenButton(code) }
+            }
             0x04, 0x05 -> runOnUiThread {
                 if (mode != Mode.VIDEO) setMode(Mode.VIDEO) else toggleRecording()
             }
-            0x06 -> runOnUiThread { flipCamera() }
-            0x0A -> runOnUiThread { stepZoom(-1) }
-            0x0B -> runOnUiThread { stepZoom(+1) }
             0xF7 -> if (ble.mtu < 300 && devBuf > 0) devBuf = minOf(devBuf, 5120)
             else -> Log.d(tag, "device cmd ${cmd.joinToString(" ") { "%02X".format(it) }}")
         }
@@ -772,9 +921,18 @@ class MainActivity : ComponentActivity(), BleLink.Listener {
         if (!sending.compareAndSet(false, true)) return
         encodeExecutor.execute {
             try {
-                val src = latestFrame ?: return@execute
                 if (ble.pendingPackets > 0) return@execute
-                val jpeg = encode(src) ?: return@execute
+                menu.expireIfIdle()
+                // Overlays are drawn upright in camera space, i.e. before encode() rotates for the screen
+                val sideways = devRot == 90 || devRot == 270
+                val w = if (sideways) devH else devW
+                val h = if (sideways) devW else devH
+                val splashNow = splash
+                val jpeg = when {
+                    splashNow != null && splashShowing() -> encode(splashNow, mirror = false)
+                    menu.isOpen -> encode(menu.render(w, h, latestFrame), mirror = false)
+                    else -> encode(latestFrame ?: return@execute, mirror = mirrorOut)
+                } ?: return@execute
                 ble.send(jpeg)
                 framesSent++
                 if (framesSent % 10 == 0) setStatus("Streaming ${devW}x$devH \u00B7 ${jpeg.size / 1024}KB/frame")
@@ -787,10 +945,10 @@ class MainActivity : ComponentActivity(), BleLink.Listener {
     }
 
     /** Rotate for the screen, cover-crop to its resolution, JPEG under its buffer limit. */
-    private fun encode(src: Bitmap): ByteArray? {
+    private fun encode(src: Bitmap, mirror: Boolean): ByteArray? {
         val m = Matrix().apply {
             postRotate(devRot.toFloat())
-            if (mirrorOut) postScale(-1f, 1f)
+            if (mirror) postScale(-1f, 1f)
         }
         val oriented = Bitmap.createBitmap(src, 0, 0, src.width, src.height, m, true)
         val out = Bitmap.createBitmap(devW, devH, Bitmap.Config.RGB_565)

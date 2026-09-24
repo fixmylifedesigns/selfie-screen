@@ -10,6 +10,11 @@ little screen, with Samsung-style zoom including the 0.6x ultra-wide lens.
 - Streams JPEG frames to the screen over BLE using the same protocol as the official app
 - The screen's buttons work: shutter = photo, flip = switch camera, zoom up/down = step through chips
 - Mirror toggle for the output, front/back camera flip
+- Splash screen: pick any image in the app (**Splash** button); it shows on the screen for 3 s
+  every time it connects, and can be shown on demand
+- On-screen menu driven by the screen's buttons: **double-press FLIP** to open it, then
+  FLIP / ZOOM+ = next, ZOOM- = previous, SHUTTER = select. Switch photo/video, front/back
+  camera, flash, mirror, or show the splash. Closes after 10 s idle.
 - No account, no cloud binding
 
 ## Build (no Android Studio needed)
