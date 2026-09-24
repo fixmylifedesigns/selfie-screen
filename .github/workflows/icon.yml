@@ -15,25 +15,41 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Install Pillow
+        run: pip install --quiet pillow
+
       - name: Download source art
         run: |
           URL=$(head -n1 ci/icon-source.txt | tr -d '\r\n')
+          echo "Fetching $URL"
           curl -fsSL "$URL" -o source.png
+          ls -l source.png
           file source.png
 
       - name: Render mipmaps
         run: |
-          set -e
-          declare -A SIZES=( [mdpi]=48 [hdpi]=72 [xhdpi]=96 [xxhdpi]=144 [xxxhdpi]=192 )
-          for d in "${!SIZES[@]}"; do
-            S=${SIZES[$d]}
-            OUT=app/src/main/res/mipmap-$d
-            mkdir -p "$OUT"
-            convert source.png -resize ${S}x${S}^ -gravity center -extent ${S}x${S} "$OUT/ic_launcher.png"
-            convert -size ${S}x${S} xc:none -fill white -draw "circle $((S/2)),$((S/2)) $((S/2)),0" mask.png
-            convert "$OUT/ic_launcher.png" mask.png -alpha Off -compose CopyOpacity -composite "$OUT/ic_launcher_round.png"
-          done
-          ls -R app/src/main/res | head -40
+          python3 - <<'PY'
+          from PIL import Image, ImageDraw
+          import os
+
+          src = Image.open("source.png").convert("RGBA")
+          sizes = {"mdpi": 48, "hdpi": 72, "xhdpi": 96, "xxhdpi": 144, "xxxhdpi": 192}
+
+          for density, size in sizes.items():
+              out = f"app/src/main/res/mipmap-{density}"
+              os.makedirs(out, exist_ok=True)
+              square = src.resize((size, size), Image.LANCZOS)
+              square.save(f"{out}/ic_launcher.png", optimize=True)
+
+              mask = Image.new("L", (size * 4, size * 4), 0)
+              ImageDraw.Draw(mask).ellipse((0, 0, size * 4 - 1, size * 4 - 1), fill=255)
+              mask = mask.resize((size, size), Image.LANCZOS)
+              round_icon = square.copy()
+              round_icon.putalpha(mask)
+              round_icon.save(f"{out}/ic_launcher_round.png", optimize=True)
+              print(density, size, "ok")
+          PY
+          find app/src/main/res -name 'ic_launcher*' -exec ls -l {} +
 
       - name: Commit icons
         run: |
